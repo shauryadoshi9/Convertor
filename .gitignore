@@ -1,0 +1,25 @@
+# MediaConverter Pro - Git Ignore
+
+# Standalone Runtime & Temporary files
+standalone/storage/database.sqlite
+standalone/storage/uploads/media-converter/output/*
+!standalone/storage/uploads/media-converter/output/index.php
+standalone/storage/uploads/media-converter/temp/*
+!standalone/storage/uploads/media-converter/temp/index.php
+
+# Temporary logs and progress files
+*.log
+*.tmp
+*.part
+prog_*.txt
+ytdlp_log_*.txt
+ffmpeg_err_*.log
+
+# OS & IDE metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
