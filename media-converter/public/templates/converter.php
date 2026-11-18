@@ -348,6 +348,199 @@ $default_format = isset( $default_format ) ? $default_format : 'all';
 		</div>
 	</div>
 
+	<!-- STATE 2B: Playlist Configuration & Track Selection Card -->
+	<div class="mc-state-panel mc-state-playlist-config" id="mc-panel-playlist-config" style="display: none;">
+		<div class="mc-playlist-header-card">
+			<div class="mc-playlist-thumb-box">
+				<img id="mc-playlist-thumb" class="mc-playlist-thumb-img" src="" alt="Playlist Thumbnail" />
+				<span class="mc-playlist-count-badge" id="mc-playlist-count-badge">0 Videos</span>
+			</div>
+			<div class="mc-playlist-info">
+				<div class="mc-playlist-tag">
+					<span class="mc-tag-icon">📋</span>
+					<span>YouTube Playlist Detected</span>
+				</div>
+				<h3 class="mc-playlist-title" id="mc-playlist-title">Playlist Title</h3>
+				<div class="mc-playlist-meta">
+					<span id="mc-playlist-author" class="mc-meta-pill">by Channel</span>
+					<span id="mc-playlist-duration" class="mc-meta-pill">Total: 00:00:00</span>
+					<span class="mc-meta-pill mc-meta-pill-highlight">⚡ 1-Click Batch Conversion</span>
+				</div>
+			</div>
+		</div>
+
+		<!-- Playlist Options Grid -->
+		<div class="mc-config-grid">
+			<!-- Format Selector -->
+			<div class="mc-config-col">
+				<label class="mc-config-label">
+					<span class="mc-label-number">1</span>
+					<span>Select Batch Output Format</span>
+				</label>
+				<div class="mc-format-toggle-group">
+					<button type="button" class="mc-format-btn active" data-pl-format="mp3">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+						<div class="mc-format-btn-text">
+							<strong>MP3 Audio</strong>
+							<small>Recommended for Playlists</small>
+						</div>
+					</button>
+					<button type="button" class="mc-format-btn" data-pl-format="mp4">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line></svg>
+						<div class="mc-format-btn-text">
+							<strong>MP4 Video</strong>
+							<small>H.264 / AAC Universal</small>
+						</div>
+					</button>
+				</div>
+			</div>
+
+			<!-- Quality Selector -->
+			<div class="mc-config-col">
+				<label class="mc-config-label">
+					<span class="mc-label-number">2</span>
+					<span>Batch Output Quality</span>
+				</label>
+				<div class="mc-quality-container" id="mc-pl-audio-quality-box">
+					<select id="mc-pl-audio-quality-select" class="mc-select-field">
+						<option value="320k" selected>320 kbps (High Quality Studio)</option>
+						<option value="256k">256 kbps (Premium)</option>
+						<option value="192k">192 kbps (Standard CD)</option>
+						<option value="128k">128 kbps (Fastest)</option>
+					</select>
+					<p class="mc-quality-note">All tracks converted with lossless extraction and ID3 tagging.</p>
+				</div>
+				<div class="mc-quality-container" id="mc-pl-video-quality-box" style="display: none;">
+					<select id="mc-pl-video-quality-select" class="mc-select-field">
+						<option value="1080p">1080p Full HD</option>
+						<option value="720p" selected>720p HD (Fast & High Quality)</option>
+						<option value="480p">480p SD</option>
+						<option value="360p">360p Fast</option>
+					</select>
+					<p class="mc-quality-note">Universal MP4 playable on all mobile and desktop devices.</p>
+				</div>
+			</div>
+		</div>
+
+		<!-- Playlist Tracklist Checklist -->
+		<div class="mc-playlist-items-card">
+			<div class="mc-playlist-toolbar">
+				<div class="mc-toolbar-left">
+					<label class="mc-select-all-label">
+						<input type="checkbox" id="mc-pl-select-all" checked />
+						<span>Select All Tracks (<span id="mc-pl-selected-count">0</span>/<span id="mc-pl-total-count">0</span>)</span>
+					</label>
+				</div>
+				<div class="mc-toolbar-right">
+					<span class="mc-toolbar-hint">Uncheck any videos you want to exclude</span>
+				</div>
+			</div>
+			<div class="mc-playlist-scroll-list" id="mc-pl-scroll-list">
+				<!-- Dynamically generated items -->
+			</div>
+		</div>
+
+		<!-- Actions -->
+		<div class="mc-config-actions">
+			<button type="button" id="mc-start-playlist-convert-btn" class="mc-btn-primary mc-btn-large">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+				<span id="mc-pl-convert-btn-text">Convert Entire Playlist (0 Videos)</span>
+			</button>
+			<button type="button" id="mc-cancel-playlist-btn" class="mc-btn-secondary">
+				<span>Choose Another URL</span>
+			</button>
+		</div>
+	</div>
+
+	<!-- STATE 3B: Playlist Conversion Progress Card -->
+	<div class="mc-state-panel mc-state-playlist-progress" id="mc-panel-playlist-progress" style="display: none;">
+		<div class="mc-progress-card">
+			<div class="mc-progress-header">
+				<div class="mc-spinner-pulse"></div>
+				<div>
+					<h3 class="mc-progress-title" id="mc-pl-progress-title">Converting Playlist...</h3>
+					<p class="mc-progress-sub" id="mc-pl-progress-sub">Processing batch tracks with high-speed streaming engine</p>
+				</div>
+				<span class="mc-progress-percentage" id="mc-pl-overall-pct">0%</span>
+			</div>
+
+			<!-- Overall Batch Progress Bar -->
+			<div class="mc-progress-track">
+				<div class="mc-progress-fill" id="mc-pl-overall-bar" style="width: 0%;"></div>
+			</div>
+
+			<!-- Active Item Detail Box -->
+			<div class="mc-pl-active-box" id="mc-pl-active-box">
+				<div class="mc-pl-active-badge">⚡ CURRENT PROCESSING</div>
+				<h4 class="mc-pl-active-title" id="mc-pl-active-title">Downloading track...</h4>
+				<div class="mc-pl-active-sub" id="mc-pl-active-sub">Initializing conversion...</div>
+			</div>
+
+			<!-- Itemized Live Queue -->
+			<div class="mc-pl-queue-card">
+				<h4 class="mc-pl-queue-header">Playlist Progress Status</h4>
+				<div class="mc-pl-queue-list" id="mc-pl-queue-list">
+					<!-- Dynamically updated -->
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- STATE 4B: Playlist Completion & ZIP Download Card -->
+	<div class="mc-state-panel mc-state-playlist-completed" id="mc-panel-playlist-completed" style="display: none;">
+		<div class="mc-completed-card">
+			<div class="mc-success-icon-wrap">
+				<svg class="mc-success-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
+			</div>
+			
+			<h2 class="mc-completed-title">Your Complete Playlist Is Ready!</h2>
+			<p class="mc-completed-sub" id="mc-pl-completed-sub">All selected videos have been converted and packaged into a single ZIP archive for 1-click download.</p>
+
+			<!-- Batch Specs -->
+			<div class="mc-completed-specs">
+				<div class="mc-spec-item">
+					<span class="mc-spec-label">Playlist</span>
+					<strong class="mc-spec-value" id="mc-pl-complete-title">Playlist Title</strong>
+				</div>
+				<div class="mc-spec-item">
+					<span class="mc-spec-label">Total Converted</span>
+					<strong class="mc-spec-value" id="mc-pl-complete-count">0 / 0</strong>
+				</div>
+				<div class="mc-spec-item">
+					<span class="mc-spec-label">Format</span>
+					<strong class="mc-spec-value" id="mc-pl-complete-format">MP3 Audio</strong>
+				</div>
+				<div class="mc-spec-item">
+					<span class="mc-spec-label">ZIP File Size</span>
+					<strong class="mc-spec-value" id="mc-pl-complete-size">-- MB</strong>
+				</div>
+			</div>
+
+			<!-- 1-Click ZIP Download Action -->
+			<div class="mc-completed-actions">
+				<a href="#" id="mc-pl-download-zip-btn" class="mc-btn-primary mc-btn-large mc-btn-zip-pulse" download>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+					<span>Download Complete Playlist (.ZIP)</span>
+				</a>
+				<button type="button" id="mc-pl-reset-btn" class="mc-btn-secondary">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 2v6h6"></path><path d="M21 12A9 9 0 0 0 6 5.3L3 8"></path><path d="M21 22v-6h-6"></path><path d="M3 12a9 9 0 0 0 15 6.7l3-2.7"></path></svg>
+					<span>Convert Another Playlist / File</span>
+				</button>
+			</div>
+
+			<!-- Individual Tracks Accordion -->
+			<div class="mc-pl-individual-card">
+				<button type="button" class="mc-pl-accordion-toggle" id="mc-pl-toggle-individual">
+					<span>Or Download Tracks Individually (<span id="mc-pl-indiv-count">0</span> files)</span>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+				</button>
+				<div class="mc-pl-individual-list" id="mc-pl-individual-list" style="display: none;">
+					<!-- Dynamically listed with individual download buttons -->
+				</div>
+			</div>
+		</div>
+	</div>
+
 	<!-- STATE 5: Error Notification Card -->
 	<div class="mc-state-panel mc-state-error" id="mc-panel-error" style="display: none;">
 		<div class="mc-error-card">

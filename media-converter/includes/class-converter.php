@@ -64,7 +64,8 @@ class MediaConverter_Converter {
 			)
 		);
 
-		$input_file = $job->input_path;
+		$input_file   = $job->input_path;
+		$is_finalized = false;
 
 		// If source is a remote direct URL and file not yet downloaded, download it securely.
 		if ( 'url' === $job->source_type && ( empty( $input_file ) || ! file_exists( $input_file ) ) ) {
@@ -73,7 +74,7 @@ class MediaConverter_Converter {
 				array(
 					'status'   => 'downloading',
 					'stage'    => 'Extracting media stream from source...',
-					'progress' => 12,
+					'progress' => 10,
 				)
 			);
 			$download_result = $this->download_remote_source(
@@ -89,8 +90,9 @@ class MediaConverter_Converter {
 				$this->database->mark_failed( $job_id, $download_result['error'] );
 				return array( 'success' => false, 'error' => $download_result['error'] );
 			}
-			$input_file = $download_result['filepath'];
-			$this->database->update_job( $job_id, array( 'input_path' => $input_file, 'progress' => 30, 'stage' => 'Media stream downloaded successfully' ) );
+			$input_file   = $download_result['filepath'];
+			$is_finalized = ! empty( $download_result['is_finalized'] );
+			$this->database->update_job( $job_id, array( 'input_path' => $input_file, 'progress' => 88, 'stage' => 'Media stream extracted successfully' ) );
 		}
 
 		if ( empty( $input_file ) || ! file_exists( $input_file ) ) {
@@ -111,19 +113,8 @@ class MediaConverter_Converter {
 			$job_id,
 			array(
 				'duration_seconds' => $duration,
-				'stage'            => 'Source validation: Completed',
-				'progress'         => 15,
-			)
-		);
-
-		// Stage 2: Media Processing & Transcoding.
-		$stage_label = ( 'mp3' === $job->output_format ) ? 'Audio encoding: In progress' : 'Media processing: In progress';
-		$this->database->update_job(
-			$job_id,
-			array(
-				'status'   => 'processing',
-				'stage'    => $stage_label,
-				'progress' => 20,
+				'stage'            => 'Finalizing media streams...',
+				'progress'         => 92,
 			)
 		);
 
@@ -133,24 +124,49 @@ class MediaConverter_Converter {
 		$output_filename = sprintf( '%s_%s.%s', $clean_name, substr( $job->job_uuid, 0, 8 ), $job->output_format );
 		$output_path     = MEDIA_CONVERTER_OUTPUT_DIR . $output_filename;
 
-		// Progress callback closure.
-		$progress_cb = function( $percent, $stage_text ) use ( $job_id ) {
-			$this->database->update_progress( $job_id, $percent, $stage_text );
-		};
+		// High-Speed Direct Path: If stream processor already produced the exact finalized format
+		// (e.g. 1080p MP4 or 320k MP3), move to output destination directly without redundant 2-hour re-encoding!
+		if ( ! empty( $is_finalized ) && file_exists( $input_file ) ) {
+			if ( ! @rename( $input_file, $output_path ) ) {
+				@copy( $input_file, $output_path );
+				@unlink( $input_file );
+			}
+			$result = array(
+				'success'     => true,
+				'output_path' => $output_path,
+				'file_size'   => file_exists( $output_path ) ? filesize( $output_path ) : 0,
+			);
+		} else {
+			// Stage 2: Media Processing & Transcoding for local uploads or unfinalized sources.
+			$stage_label = ( 'mp3' === $job->output_format ) ? 'Audio encoding: In progress' : 'Media processing: In progress';
+			$this->database->update_job(
+				$job_id,
+				array(
+					'status'   => 'processing',
+					'stage'    => $stage_label,
+					'progress' => 20,
+				)
+			);
 
-		// Run FFmpeg conversion.
-		$result = $this->ffmpeg->convert(
-			$input_file,
-			$output_path,
-			$job->output_format,
-			$job->output_quality,
-			$progress_cb,
-			$duration,
-			$probe['tags'] ?? array(),
-			$probe,
-			$job->trim_start ?? null,
-			$job->trim_end ?? null
-		);
+			// Progress callback closure.
+			$progress_cb = function( $percent, $stage_text ) use ( $job_id ) {
+				$this->database->update_progress( $job_id, $percent, $stage_text );
+			};
+
+			// Run FFmpeg conversion.
+			$result = $this->ffmpeg->convert(
+				$input_file,
+				$output_path,
+				$job->output_format,
+				$job->output_quality,
+				$progress_cb,
+				$duration,
+				$probe['tags'] ?? array(),
+				$probe,
+				$job->trim_start ?? null,
+				$job->trim_end ?? null
+			);
+		}
 
 		if ( ! $result['success'] ) {
 			$this->database->mark_failed( $job_id, $result['error'] );
@@ -242,8 +258,9 @@ class MediaConverter_Converter {
 		}
 
 		return array(
-			'success'  => true,
-			'filepath' => $temp_file,
+			'success'      => true,
+			'filepath'     => $temp_file,
+			'is_finalized' => false,
 		);
 	}
 
@@ -267,7 +284,9 @@ class MediaConverter_Converter {
 		}
 
 		$ffmpeg_bin = $this->ffmpeg->get_ffmpeg_path();
-		$temp_file  = MEDIA_CONVERTER_TEMP_DIR . 'yt_' . sanitize_file_name( $uuid ) . '.mp4';
+		$is_mp3     = ( 'mp3' === strtolower( $format ) );
+		$target_ext = $is_mp3 ? 'mp3' : 'mp4';
+		$temp_file  = MEDIA_CONVERTER_TEMP_DIR . 'yt_' . sanitize_file_name( $uuid ) . '.' . $target_ext;
 		$log_file   = MEDIA_CONVERTER_TEMP_DIR . 'ytdlp_log_' . sanitize_file_name( $uuid ) . '.txt';
 
 		if ( $job_id ) {
@@ -280,13 +299,45 @@ class MediaConverter_Converter {
 			);
 		}
 
-		// Smart format selection:
-		// If user requested MP3, only fetch audio stream (tiny ~3MB to ~100MB download in seconds)
-		if ( 'mp3' === strtolower( $format ) ) {
-			$format_selector = 'ba[ext=m4a]/ba/b';
+		// Base command arguments optimized for maximum reliability and throughput.
+		// Uses 4 concurrent fragments to avoid YouTube CDN anti-abuse throttling on long 2hr+ streams.
+		$cmd_args = array(
+			escapeshellarg( $ytdlp_bin ),
+			'--no-playlist',
+			'--no-warnings',
+			'--no-cache-dir',
+			'--no-mtime',
+			'--socket-timeout', '30',
+			'--retries', '10',
+			'--fragment-retries', '10',
+			'--concurrent-fragments', '4',
+			'--ffmpeg-location', escapeshellarg( $ffmpeg_bin ),
+			'--newline',
+			'--progress-template', escapeshellarg( 'mc_prog:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress._total_bytes_estimate_str)s' ),
+		);
+
+		if ( $is_mp3 ) {
+			// MP3 Direct Extraction: only download the tiny audio stream (50-100MB for 2 hours)
+			// and extract pristine 320k MP3 directly via FFmpeg integration in seconds.
+			$quality_map = array(
+				'320k'     => '320K',
+				'256k'     => '256K',
+				'192k'     => '192K',
+				'128k'     => '128K',
+				'original' => '0',
+			);
+			$audio_q = $quality_map[ $quality ] ?? '320K';
+
+			$cmd_args[] = '-x';
+			$cmd_args[] = '--audio-format';
+			$cmd_args[] = 'mp3';
+			$cmd_args[] = '--audio-quality';
+			$cmd_args[] = escapeshellarg( $audio_q );
+			$cmd_args[] = '--embed-metadata';
+			$cmd_args[] = '-f';
+			$cmd_args[] = escapeshellarg( 'ba[ext=m4a]/ba/b' );
 		} else {
-			// Prioritize native H.264 (avc1) video + AAC (m4a) audio so YouTube streams are downloaded directly
-			// as compliant H.264/AAC MP4. This allows instantaneous stream-copy remuxing without slow CPU re-encoding.
+			// MP4 Video: prioritize native H.264 (avc1) video + AAC audio so stream-copy remuxing is instant.
 			switch ( $quality ) {
 				case '360p':
 					$format_selector = '18/bv*[vcodec^=avc][height<=360]+ba[ext=m4a]/bv*[height<=360][ext=mp4]+ba[ext=m4a]/bv*[height<=360]+ba/b[height<=360]/best';
@@ -303,28 +354,14 @@ class MediaConverter_Converter {
 					$format_selector = 'bv*[vcodec^=avc][height<=1080]+ba[ext=m4a]/bv*[vcodec^=avc]+ba[ext=m4a]/bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/best';
 					break;
 			}
-		}
 
-		// Construct non-blocking, multi-threaded command arguments
-		$cmd_args = array(
-			escapeshellarg( $ytdlp_bin ),
-			'--no-playlist',
-			'--no-warnings',
-			'--no-cache-dir',
-			'--no-mtime',
-			'--socket-timeout', '30',
-			'--retries', '5',
-			'--fragment-retries', '5',
-			'--concurrent-fragments', '16', // High-speed parallel chunk downloading across 16 streams
-			'--http-chunk-size', '10M',
-			'--buffer-size', '64K',
-			'--abort-on-unavailable-fragments',
-			'--ffmpeg-location', escapeshellarg( $ffmpeg_bin ),
-			'--newline',
-			'--progress-template', escapeshellarg( 'mc_prog:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress._total_bytes_estimate_str)s' ),
-			'-f', escapeshellarg( $format_selector ),
-			'-o', escapeshellarg( $temp_file ),
-		);
+			$cmd_args[] = '--merge-output-format';
+			$cmd_args[] = 'mp4';
+			$cmd_args[] = '--postprocessor-args';
+			$cmd_args[] = escapeshellarg( 'ffmpeg:-c:v copy -c:a aac -b:a 192k' );
+			$cmd_args[] = '-f';
+			$cmd_args[] = escapeshellarg( $format_selector );
+		}
 
 		// If time-range trimming is specified, download only the requested section
 		if ( ! empty( $trim_start ) || ! empty( $trim_end ) ) {
@@ -332,9 +369,10 @@ class MediaConverter_Converter {
 			$t_end   = ! empty( $trim_end ) ? $trim_end : 'inf';
 			$cmd_args[] = '--download-sections';
 			$cmd_args[] = escapeshellarg( "*{$t_start}-{$t_end}" );
-			$cmd_args[] = '--force-keyframes-at-cuts';
 		}
 
+		$cmd_args[] = '-o';
+		$cmd_args[] = escapeshellarg( $temp_file );
 		$cmd_args[] = escapeshellarg( $url );
 
 		$command = implode( ' ', $cmd_args ) . ' > ' . escapeshellarg( $log_file ) . ' 2>&1';
@@ -357,36 +395,52 @@ class MediaConverter_Converter {
 			$status = proc_get_status( $proc );
 			if ( file_exists( $log_file ) ) {
 				$log_content = @file_get_contents( $log_file );
-				if ( ! empty( $log_content ) && preg_match_all( '/mc_prog:([^\r\n]+)/', $log_content, $matches ) ) {
-					$last_line = end( $matches[1] );
-					$parts = explode( '|', $last_line );
-					$raw_pct = floatval( str_replace( '%', '', $parts[0] ?? '0' ) );
-					$speed   = trim( $parts[1] ?? '' );
-					$eta     = trim( $parts[2] ?? '' );
-					$total   = trim( $parts[3] ?? '' );
+				if ( ! empty( $log_content ) ) {
+					$lines = explode( "\n", $log_content );
+					for ( $i = count( $lines ) - 1; $i >= max( 0, count( $lines ) - 25 ); $i-- ) {
+						$line = trim( $lines[ $i ] );
+						$raw_pct = 0;
+						$speed   = '';
+						$eta     = '';
+						$total   = '';
 
-					if ( $raw_pct > 0 ) {
-						// Scale download progress from 12% to 85%
-						$scaled_pct = round( 12.0 + ( $raw_pct * 0.73 ), 1 );
-						if ( $scaled_pct > $last_pct ) {
-							$last_pct = $scaled_pct;
-							$stage_desc = sprintf(
-								'Downloading %s: %s%s%s%s',
-								strtoupper( $format ),
-								round( $raw_pct, 1 ) . '%',
-								( ! empty( $total ) && 'N/A' !== $total ) ? " of {$total}" : '',
-								( ! empty( $speed ) && 'N/A' !== $speed ) ? " at {$speed}" : '',
-								( ! empty( $eta ) && 'N/A' !== $eta ) ? " (ETA: {$eta})" : ''
-							);
-							if ( $job_id ) {
-								$this->database->update_job(
-									$job_id,
-									array(
-										'progress' => $scaled_pct,
-										'stage'    => $stage_desc,
-									)
+						if ( preg_match( '/mc_prog:([0-9\.]+)%?\|([^\|]+)\|([^\|]+)\|([^\r\n]+)/', $line, $pm ) ) {
+							$raw_pct = floatval( $pm[1] );
+							$speed   = trim( $pm[2] );
+							$eta     = trim( $pm[3] );
+							$total   = trim( $pm[4] );
+						} elseif ( preg_match( '/\[download\]\s+([\d\.]+)%\s+of\s+(?:~?\s*)?([^\s]+)\s+at\s+([^\s]+)\s+ETA\s+([^\r\n\s]+)/', $line, $pm ) ) {
+							$raw_pct = floatval( $pm[1] );
+							$total   = trim( $pm[2] );
+							$speed   = trim( $pm[3] );
+							$eta     = trim( $pm[4] );
+						} elseif ( preg_match( '/\[download\]\s+([\d\.]+)%/', $line, $pm ) ) {
+							$raw_pct = floatval( $pm[1] );
+						}
+
+						if ( $raw_pct > 0 ) {
+							$scaled_pct = round( 12.0 + ( $raw_pct * 0.76 ), 1 );
+							if ( $scaled_pct > $last_pct ) {
+								$last_pct = $scaled_pct;
+								$stage_desc = sprintf(
+									'Downloading %s: %s%s%s%s',
+									strtoupper( $format ),
+									round( $raw_pct, 1 ) . '%',
+									( ! empty( $total ) && 'N/A' !== $total ) ? " of {$total}" : '',
+									( ! empty( $speed ) && 'N/A' !== $speed ) ? " at {$speed}" : '',
+									( ! empty( $eta ) && 'N/A' !== $eta ) ? " (ETA: {$eta})" : ''
 								);
+								if ( $job_id ) {
+									$this->database->update_job(
+										$job_id,
+										array(
+											'progress' => $scaled_pct,
+											'stage'    => $stage_desc,
+										)
+									);
+								}
 							}
+							break;
 						}
 					}
 				}
@@ -428,8 +482,9 @@ class MediaConverter_Converter {
 		}
 
 		return array(
-			'success'  => true,
-			'filepath' => $temp_file,
+			'success'      => true,
+			'filepath'     => $temp_file,
+			'is_finalized' => true,
 		);
 	}
 }

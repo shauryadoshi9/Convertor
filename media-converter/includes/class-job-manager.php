@@ -138,6 +138,46 @@ class MediaConverter_Job_Manager {
 	}
 
 	/**
+	 * Spawn background CLI worker for playlist batch detached from current request.
+	 *
+	 * @param string $batch_uuid
+	 * @return bool
+	 */
+	public function spawn_batch_worker( $batch_uuid ) {
+		$worker_script = MEDIA_CONVERTER_PATH . 'bin/playlist-worker.php';
+		if ( ! file_exists( $worker_script ) ) {
+			return false;
+		}
+
+		$php_bin = defined( 'PHP_BINARY' ) && PHP_BINARY ? PHP_BINARY : 'php';
+
+		if ( stripos( PHP_OS, 'WIN' ) === 0 ) {
+			$cmd = sprintf(
+				'start "" /B %s %s --batch_uuid=%s > NUL 2>&1',
+				escapeshellarg( $php_bin ),
+				escapeshellarg( $worker_script ),
+				escapeshellarg( $batch_uuid )
+			);
+			$handle = @popen( $cmd, 'r' );
+			if ( $handle ) {
+				@pclose( $handle );
+				return true;
+			}
+		} else {
+			$cmd = sprintf(
+				'%s %s --batch_uuid=%s > /dev/null 2>&1 &',
+				escapeshellarg( $php_bin ),
+				escapeshellarg( $worker_script ),
+				escapeshellarg( $batch_uuid )
+			);
+			@exec( $cmd );
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
 	 * Process pending queued jobs obeying concurrency limit.
 	 */
 	public function process_queue() {

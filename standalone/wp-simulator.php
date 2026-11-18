@@ -47,6 +47,7 @@ class WP_Simulator_DB {
 		$this->dbh->exec( "CREATE TABLE IF NOT EXISTS {$this->prefix}media_conversion_jobs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			job_uuid TEXT UNIQUE,
+			batch_uuid TEXT DEFAULT NULL,
 			user_id INTEGER DEFAULT 0,
 			source_type TEXT DEFAULT 'upload',
 			source_url TEXT,
@@ -56,6 +57,8 @@ class WP_Simulator_DB {
 			output_path TEXT,
 			output_format TEXT DEFAULT 'mp4',
 			output_quality TEXT DEFAULT 'original',
+			trim_start TEXT DEFAULT NULL,
+			trim_end TEXT DEFAULT NULL,
 			status TEXT DEFAULT 'queued',
 			stage TEXT DEFAULT 'Queued',
 			progress REAL DEFAULT 0,
@@ -69,6 +72,32 @@ class WP_Simulator_DB {
 			started_at TEXT,
 			completed_at TEXT,
 			expires_at TEXT
+		)" );
+
+		// Auto-migrate columns if existing SQLite DB was created without them.
+		try { $this->dbh->exec( "ALTER TABLE {$this->prefix}media_conversion_jobs ADD COLUMN batch_uuid TEXT DEFAULT NULL" ); } catch ( Exception $e ) {}
+		try { $this->dbh->exec( "ALTER TABLE {$this->prefix}media_conversion_jobs ADD COLUMN trim_start TEXT DEFAULT NULL" ); } catch ( Exception $e ) {}
+		try { $this->dbh->exec( "ALTER TABLE {$this->prefix}media_conversion_jobs ADD COLUMN trim_end TEXT DEFAULT NULL" ); } catch ( Exception $e ) {}
+
+		$this->dbh->exec( "CREATE TABLE IF NOT EXISTS {$this->prefix}media_conversion_batches (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			batch_uuid TEXT UNIQUE,
+			user_id INTEGER DEFAULT 0,
+			playlist_title TEXT NOT NULL,
+			playlist_url TEXT,
+			total_items INTEGER DEFAULT 0,
+			completed_items INTEGER DEFAULT 0,
+			failed_items INTEGER DEFAULT 0,
+			output_format TEXT DEFAULT 'mp3',
+			output_quality TEXT DEFAULT '320k',
+			status TEXT DEFAULT 'queued',
+			stage TEXT DEFAULT 'Queued',
+			zip_filename TEXT,
+			zip_path TEXT,
+			zip_size INTEGER DEFAULT 0,
+			download_token TEXT,
+			created_at TEXT,
+			completed_at TEXT
 		)" );
 	}
 

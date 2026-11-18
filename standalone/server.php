@@ -90,6 +90,38 @@ if ( str_starts_with( $uri, '/api/media-converter/v1/' ) || str_starts_with( $ur
 		echo json_encode( $res->data );
 		exit;
 	}
+
+	if ( '/playlist-info' === $subpath && 'POST' === $method ) {
+		$res = $rest_api->handle_playlist_info( $request );
+		header( 'Content-Type: application/json' );
+		http_response_code( $res->status );
+		echo json_encode( $res->data );
+		exit;
+	}
+
+	if ( '/convert-playlist' === $subpath && 'POST' === $method ) {
+		$res = $rest_api->handle_convert_playlist( $request );
+		header( 'Content-Type: application/json' );
+		http_response_code( $res->status );
+		echo json_encode( $res->data );
+		exit;
+	}
+
+	if ( preg_match( '#^/playlist/([a-zA-Z0-9-]+)/progress$#', $subpath, $matches ) ) {
+		$request = new WP_REST_Request( 'GET', array( 'uuid' => $matches[1] ) );
+		$res = $rest_api->handle_playlist_progress( $request );
+		header( 'Content-Type: application/json' );
+		http_response_code( $res->status );
+		echo json_encode( $res->data );
+		exit;
+	}
+
+	if ( preg_match( '#^/playlist/([a-zA-Z0-9-]+)/download-zip$#', $subpath, $matches ) ) {
+		$token = $_GET['token'] ?? '';
+		$request = new WP_REST_Request( 'GET', array( 'uuid' => $matches[1], 'token' => $token ) );
+		$rest_api->handle_playlist_download_zip( $request );
+		exit;
+	}
 }
 
 // 3. Admin AJAX Dispatcher.

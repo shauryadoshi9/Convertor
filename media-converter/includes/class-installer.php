@@ -39,11 +39,13 @@ class MediaConverter_Installer {
 		global $wpdb;
 
 		$table_name      = $wpdb->prefix . 'media_conversion_jobs';
+		$batch_table     = $wpdb->prefix . 'media_conversion_batches';
 		$charset_collate = $wpdb->get_charset_collate();
 
 		$sql = "CREATE TABLE {$table_name} (
 			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
 			job_uuid varchar(64) NOT NULL,
+			batch_uuid varchar(64) DEFAULT NULL,
 			user_id bigint(20) unsigned DEFAULT 0,
 			source_type varchar(20) NOT NULL DEFAULT 'upload',
 			source_url text DEFAULT NULL,
@@ -70,10 +72,35 @@ class MediaConverter_Installer {
 			expires_at datetime DEFAULT NULL,
 			PRIMARY KEY  (id),
 			UNIQUE KEY job_uuid (job_uuid),
+			KEY batch_uuid (batch_uuid),
 			KEY status (status),
 			KEY user_id (user_id),
 			KEY download_token (download_token),
 			KEY expires_at (expires_at)
+		) {$charset_collate};";
+
+		$sql_batches = "CREATE TABLE {$batch_table} (
+			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+			batch_uuid varchar(64) NOT NULL,
+			user_id bigint(20) unsigned DEFAULT 0,
+			playlist_title varchar(255) NOT NULL,
+			playlist_url text DEFAULT NULL,
+			total_items int(11) NOT NULL DEFAULT 0,
+			completed_items int(11) NOT NULL DEFAULT 0,
+			failed_items int(11) NOT NULL DEFAULT 0,
+			output_format varchar(10) NOT NULL DEFAULT 'mp3',
+			output_quality varchar(50) NOT NULL DEFAULT '320k',
+			status varchar(20) NOT NULL DEFAULT 'queued',
+			stage varchar(150) NOT NULL DEFAULT 'Queued',
+			zip_filename varchar(255) DEFAULT NULL,
+			zip_path text DEFAULT NULL,
+			zip_size bigint(20) unsigned DEFAULT 0,
+			download_token varchar(64) DEFAULT NULL,
+			created_at datetime NOT NULL,
+			completed_at datetime DEFAULT NULL,
+			PRIMARY KEY  (id),
+			UNIQUE KEY batch_uuid (batch_uuid),
+			KEY status (status)
 		) {$charset_collate};";
 
 		if ( file_exists( ABSPATH . 'wp-admin/includes/upgrade.php' ) ) {
@@ -81,8 +108,10 @@ class MediaConverter_Installer {
 		}
 		if ( function_exists( 'dbDelta' ) ) {
 			dbDelta( $sql );
+			dbDelta( $sql_batches );
 		} else {
 			$wpdb->query( $sql );
+			$wpdb->query( $sql_batches );
 		}
 	}
 

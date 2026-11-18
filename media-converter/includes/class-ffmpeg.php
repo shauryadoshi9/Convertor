@@ -248,7 +248,10 @@ class MediaConverter_FFmpeg {
 		$progress_file = MEDIA_CONVERTER_TEMP_DIR . 'prog_' . wp_generate_password( 16, false ) . '.txt';
 
 		$options = get_option( 'media_converter_options', array() );
-		$timeout = isset( $options['max_conversion_duration_sec'] ) ? intval( $options['max_conversion_duration_sec'] ) : 3600;
+		$timeout = isset( $options['max_conversion_duration_sec'] ) ? intval( $options['max_conversion_duration_sec'] ) : 7200;
+		if ( $total_duration > 0 ) {
+			$timeout = max( $timeout, intval( $total_duration * 2.5 ) );
+		}
 
 		// If probe data wasn't provided, probe the media now
 		if ( empty( $probe_data ) || ! isset( $probe_data['video_codec'] ) ) {
@@ -335,7 +338,7 @@ class MediaConverter_FFmpeg {
 				$scale_filter = $this->resolve_video_scale( $quality );
 
 				$cmd_args[] = '-c:v libx264';
-				$cmd_args[] = '-preset veryfast';
+				$cmd_args[] = '-preset superfast';
 				$cmd_args[] = '-threads 0';
 				$cmd_args[] = '-crf 22';
 				$cmd_args[] = '-pix_fmt yuv420p'; // Universal browser compatibility

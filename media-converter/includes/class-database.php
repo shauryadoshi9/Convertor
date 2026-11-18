@@ -48,6 +48,7 @@ class MediaConverter_Database {
 
 		$insert_data = array(
 			'job_uuid'          => $uuid,
+			'batch_uuid'        => ! empty( $data['batch_uuid'] ) ? sanitize_text_field( $data['batch_uuid'] ) : null,
 			'user_id'           => isset( $data['user_id'] ) ? absint( $data['user_id'] ) : 0,
 			'source_type'       => isset( $data['source_type'] ) ? sanitize_key( $data['source_type'] ) : 'upload',
 			'source_url'        => isset( $data['source_url'] ) ? esc_url_raw( $data['source_url'] ) : null,
@@ -372,6 +373,120 @@ class MediaConverter_Database {
 				"SELECT * FROM {$table} WHERE (expires_at <= %s AND status != 'expired') OR (status = 'expired') LIMIT %d",
 				$now,
 				absint( $limit )
+			)
+		);
+	}
+
+	/**
+	 * Get batch table name.
+	 *
+	 * @return string
+	 */
+	public function get_batch_table_name() {
+		global $wpdb;
+		return $wpdb->prefix . 'media_conversion_batches';
+	}
+
+	/**
+	 * Create a new batch / playlist conversion record.
+	 *
+	 * @param array $data
+	 * @return int|false
+	 */
+	public function create_batch( array $data ) {
+		global $wpdb;
+
+		$uuid = ! empty( $data['batch_uuid'] ) ? sanitize_text_field( $data['batch_uuid'] ) : wp_generate_uuid4();
+		$now  = current_time( 'mysql' );
+
+		$insert_data = array(
+			'batch_uuid'      => $uuid,
+			'user_id'         => isset( $data['user_id'] ) ? absint( $data['user_id'] ) : 0,
+			'playlist_title'  => isset( $data['playlist_title'] ) ? sanitize_text_field( $data['playlist_title'] ) : 'Playlist',
+			'playlist_url'    => isset( $data['playlist_url'] ) ? esc_url_raw( $data['playlist_url'] ) : null,
+			'total_items'     => isset( $data['total_items'] ) ? absint( $data['total_items'] ) : 0,
+			'completed_items' => 0,
+			'failed_items'    => 0,
+			'output_format'   => isset( $data['output_format'] ) ? sanitize_key( $data['output_format'] ) : 'mp3',
+			'output_quality'  => isset( $data['output_quality'] ) ? sanitize_text_field( $data['output_quality'] ) : '320k',
+			'status'          => 'queued',
+			'stage'           => 'Queued',
+			'download_token'  => wp_generate_password( 32, false ),
+			'created_at'      => $now,
+		);
+
+		$result = $wpdb->insert( $this->get_batch_table_name(), $insert_data );
+		return ( false !== $result ) ? $wpdb->insert_id : false;
+	}
+
+	/**
+	 * Get batch record by UUID.
+	 *
+	 * @param string $uuid
+	 * @return object|null
+	 */
+	public function get_batch_by_uuid( $uuid ) {
+		global $wpdb;
+		$table = $this->get_batch_table_name();
+		return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE batch_uuid = %s", sanitize_text_field( $uuid ) ) );
+	}
+
+	/**
+	 * Get batch record by download token.
+	 *
+	 * @param string $token
+	 * @return object|null
+	 */
+	public function get_batch_by_token( $token ) {
+		global $wpdb;
+		$table = $this->get_batch_table_name();
+		return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE download_token = %s", sanitize_text_field( $token ) ) );
+	}
+
+	/**
+	 * Update batch record.
+	 *
+	 * @param string $uuid
+	 * @param array $data
+	 * @return bool
+	 */
+	public function update_batch( $uuid, array $data ) {
+		global $wpdb;
+		$table = $this->get_batch_table_name();
+		return (bool) $wpdb->update( $table, $data, array( 'batch_uuid' => sanitize_text_field( $uuid ) ) );
+	}
+
+	/**
+	 * Fetch all child jobs for a batch.
+	 *
+	 * @param string $batch_uuid
+	 * @return array
+	 */
+	public function get_batch_jobs( $batch_uuid ) {
+		global $wpdb;
+		$table = $this->get_table_name();
+		return $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE batch_uuid = %s ORDER BY id ASC", sanitize_text_field( $batch_uuid ) ) );
+	}
+
+	/**
+	 * Mark batch as completed with ZIP package info.
+	 *
+	 * @param string $uuid
+	 * @param string $zip_filename
+	 * @param string $zip_path
+	 * @param int $zip_size
+	 * @return bool
+	 */
+	public function mark_batch_completed( $uuid, $zip_filename, $zip_path, $zip_size ) {
+		return $this->update_batch(
+			$uuid,
+			array(
+				'status'       => 'completed',
+				'stage'        => 'Playlist conversion ready for download!',
+				'zip_filename' => $zip_filename,
+				'zip_path'     => $zip_path,
+				'zip_size'     => $zip_size,
+				'completed_at' => current_time( 'mysql' ),
 			)
 		);
 	}

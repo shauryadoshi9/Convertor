@@ -15,6 +15,7 @@ require_once __DIR__ . '/test_database.php';
 require_once __DIR__ . '/test_security.php';
 require_once __DIR__ . '/test_validator.php';
 require_once __DIR__ . '/test_ffmpeg.php';
+require_once __DIR__ . '/test_playlist_e2e.php';
 
 $elapsed = round( microtime( true ) - $start, 2 );
 

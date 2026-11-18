@@ -113,13 +113,46 @@ class MediaConverter_REST_API {
 			)
 		);
 
-		// 7. General statistics.
+		// 8. Playlist info extraction.
 		register_rest_route(
 			self::NAMESPACE,
-			'/stats',
+			'/playlist-info',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'handle_playlist_info' ),
+				'permission_callback' => '__return_true',
+			)
+		);
+
+		// 9. Batch / Playlist conversion submit.
+		register_rest_route(
+			self::NAMESPACE,
+			'/convert-playlist',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'handle_convert_playlist' ),
+				'permission_callback' => '__return_true',
+			)
+		);
+
+		// 10. Playlist progress polling.
+		register_rest_route(
+			self::NAMESPACE,
+			'/playlist/(?P<uuid>[a-zA-Z0-9-]+)/progress',
 			array(
 				'methods'             => WP_REST_Server::READABLE,
-				'callback'            => array( $this, 'handle_stats' ),
+				'callback'            => array( $this, 'handle_playlist_progress' ),
+				'permission_callback' => '__return_true',
+			)
+		);
+
+		// 11. Complete playlist ZIP download.
+		register_rest_route(
+			self::NAMESPACE,
+			'/playlist/(?P<uuid>[a-zA-Z0-9-]+)/download-zip',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => array( $this, 'handle_playlist_download_zip' ),
 				'permission_callback' => '__return_true',
 			)
 		);
@@ -416,5 +449,217 @@ class MediaConverter_REST_API {
 			),
 			200
 		);
+	}
+
+	/**
+	 * Endpoint: POST /playlist-info
+	 */
+	public function handle_playlist_info( WP_REST_Request $request ) {
+		$params = $request->get_json_params();
+		$url    = esc_url_raw( $params['url'] ?? '' );
+
+		if ( empty( $url ) ) {
+			return new WP_REST_Response( array( 'success' => false, 'message' => __( 'Please supply a playlist URL.', 'media-converter' ) ), 400 );
+		}
+
+		$val_check = $this->plugin->validator->validate_remote_url( $url );
+		if ( ! $val_check['success'] ) {
+			return new WP_REST_Response( array( 'success' => false, 'message' => $val_check['error'] ), 400 );
+		}
+
+		$pl_data = $this->plugin->validator->fetch_playlist_info( $url );
+		if ( ! $pl_data['success'] ) {
+			return new WP_REST_Response( array( 'success' => false, 'message' => $pl_data['error'] ?? 'Could not parse playlist.' ), 400 );
+		}
+
+		return new WP_REST_Response( $pl_data, 200 );
+	}
+
+	/**
+	 * Endpoint: POST /convert-playlist
+	 */
+	public function handle_convert_playlist( WP_REST_Request $request ) {
+		$params = $request->get_json_params();
+
+		$playlist_url    = esc_url_raw( $params['playlist_url'] ?? '' );
+		$playlist_title  = sanitize_text_field( $params['playlist_title'] ?? 'YouTube Playlist' );
+		$output_format   = sanitize_key( $params['output_format'] ?? 'mp3' );
+		$output_quality  = sanitize_text_field( $params['output_quality'] ?? ( 'mp3' === $output_format ? '320k' : 'original' ) );
+		$selected_items  = (array) ( $params['items'] ?? array() );
+		$user_id         = get_current_user_id();
+
+		if ( empty( $selected_items ) ) {
+			return new WP_REST_Response( array( 'success' => false, 'message' => __( 'No playlist items selected for conversion.', 'media-converter' ) ), 400 );
+		}
+
+		$batch_uuid = wp_generate_uuid4();
+		$database   = $this->plugin->database;
+
+		$batch_id = $database->create_batch( array(
+			'batch_uuid'     => $batch_uuid,
+			'user_id'        => $user_id,
+			'playlist_title' => $playlist_title,
+			'playlist_url'   => $playlist_url,
+			'total_items'    => count( $selected_items ),
+			'output_format'  => $output_format,
+			'output_quality' => $output_quality,
+		) );
+
+		if ( ! $batch_id ) {
+			return new WP_REST_Response( array( 'success' => false, 'message' => __( 'Could not create playlist conversion batch.', 'media-converter' ) ), 500 );
+		}
+
+		$ip_hash = $this->plugin->security->get_client_ip_hash();
+
+		// Enqueue each playlist item as a linked job
+		foreach ( $selected_items as $item ) {
+			$item_title = sanitize_text_field( $item['title'] ?? 'Track' );
+			$item_url   = esc_url_raw( $item['url'] ?? '' );
+
+			if ( empty( $item_url ) && ! empty( $item['id'] ) ) {
+				$item_url = 'https://www.youtube.com/watch?v=' . sanitize_text_field( $item['id'] );
+			}
+
+			$job_uuid = wp_generate_uuid4();
+			$database->create_job( array(
+				'job_uuid'          => $job_uuid,
+				'batch_uuid'        => $batch_uuid,
+				'user_id'           => $user_id,
+				'source_type'       => 'url',
+				'source_url'        => $item_url,
+				'original_filename' => $item_title,
+				'output_format'     => $output_format,
+				'output_quality'    => $output_quality,
+				'ip_hash'           => $ip_hash,
+			) );
+		}
+
+		// Spawn dedicated background playlist worker
+		$spawned = $this->plugin->job_manager->spawn_batch_worker( $batch_uuid );
+
+		return new WP_REST_Response(
+			array(
+				'success'     => true,
+				'batch_uuid'  => $batch_uuid,
+				'total_items' => count( $selected_items ),
+				'async'       => $spawned,
+				'message'     => sprintf( __( 'Playlist queued with %d items. Conversion starting...', 'media-converter' ), count( $selected_items ) ),
+			),
+			200
+		);
+	}
+
+	/**
+	 * Endpoint: GET /playlist/{uuid}/progress
+	 */
+	public function handle_playlist_progress( WP_REST_Request $request ) {
+		$uuid     = sanitize_text_field( $request->get_param( 'uuid' ) );
+		$database = $this->plugin->database;
+
+		$batch = $database->get_batch_by_uuid( $uuid );
+		if ( ! $batch ) {
+			return new WP_REST_Response( array( 'success' => false, 'message' => __( 'Playlist batch not found.', 'media-converter' ) ), 404 );
+		}
+
+		$jobs = $database->get_batch_jobs( $uuid );
+		$total_count = intval( $batch->total_items );
+		$completed_count = intval( $batch->completed_items );
+		$failed_count = intval( $batch->failed_items );
+
+		$overall_pct = $total_count > 0 ? round( ( ( $completed_count + $failed_count ) / $total_count ) * 100, 1 ) : 0;
+		if ( 'completed' === $batch->status ) {
+			$overall_pct = 100.0;
+		}
+
+		$current_item = null;
+		$items_status = array();
+
+		foreach ( $jobs as $job ) {
+			$is_active = ( in_array( $job->status, array( 'downloading', 'processing', 'validating' ), true ) );
+			$item_info = array(
+				'uuid'      => $job->job_uuid,
+				'title'     => $job->original_filename,
+				'status'    => $job->status,
+				'progress'  => floatval( $job->progress ),
+				'stage'     => $job->stage,
+				'file_size' => $job->file_size ? size_format( $job->file_size, 2 ) : '',
+				'download_url' => ( 'completed' === $job->status && ! empty( $job->download_token ) )
+					? rest_url( self::NAMESPACE . '/download?token=' . urlencode( $job->download_token ) )
+					: '',
+			);
+
+			if ( $is_active && null === $current_item ) {
+				$current_item = $item_info;
+			}
+			$items_status[] = $item_info;
+		}
+
+		$zip_url = '';
+		if ( 'completed' === $batch->status && ! empty( $batch->download_token ) ) {
+			$zip_url = rest_url( self::NAMESPACE . '/playlist/' . $uuid . '/download-zip?token=' . urlencode( $batch->download_token ) );
+		}
+
+		return new WP_REST_Response(
+			array(
+				'success'          => true,
+				'batch_uuid'       => $batch->batch_uuid,
+				'playlist_title'   => $batch->playlist_title,
+				'output_format'    => $batch->output_format,
+				'output_quality'   => $batch->output_quality,
+				'status'           => $batch->status,
+				'stage'            => $batch->stage,
+				'total_items'      => $total_count,
+				'completed_items'  => $completed_count,
+				'failed_items'     => $failed_count,
+				'overall_progress' => $overall_pct,
+				'current_item'     => $current_item,
+				'zip_download_url' => $zip_url,
+				'zip_filename'     => $batch->zip_filename,
+				'zip_size'         => $batch->zip_size ? size_format( $batch->zip_size, 2 ) : '',
+				'items'            => $items_status,
+			),
+			200
+		);
+	}
+
+	/**
+	 * Endpoint: GET /playlist/{uuid}/download-zip
+	 */
+	public function handle_playlist_download_zip( WP_REST_Request $request ) {
+		$uuid     = sanitize_text_field( $request->get_param( 'uuid' ) );
+		$token    = sanitize_text_field( $request->get_param( 'token' ) );
+		$database = $this->plugin->database;
+
+		$batch = $database->get_batch_by_uuid( $uuid );
+		if ( ! $batch ) {
+			wp_die( esc_html__( 'Playlist batch not found.', 'media-converter' ), 404 );
+		}
+
+		if ( empty( $token ) || empty( $batch->download_token ) || ! hash_equals( $batch->download_token, $token ) ) {
+			wp_die( esc_html__( 'Invalid or expired download authorization token.', 'media-converter' ), 403 );
+		}
+
+		$zip_path = $batch->zip_path;
+		if ( empty( $zip_path ) || ! file_exists( $zip_path ) ) {
+			wp_die( esc_html__( 'The compiled ZIP file could not be found on the server.', 'media-converter' ), 404 );
+		}
+
+		$filename = ! empty( $batch->zip_filename ) ? $batch->zip_filename : basename( $zip_path );
+
+		if ( ob_get_level() ) {
+			ob_end_clean();
+		}
+
+		header( 'Content-Description: File Transfer' );
+		header( 'Content-Type: application/zip' );
+		header( 'Content-Disposition: attachment; filename="' . esc_attr( $filename ) . '"' );
+		header( 'Content-Transfer-Encoding: binary' );
+		header( 'Expires: 0' );
+		header( 'Cache-Control: must-revalidate, post-check=0, pre-check=0' );
+		header( 'Pragma: public' );
+		header( 'Content-Length: ' . filesize( $zip_path ) );
+
+		readfile( $zip_path );
+		exit;
 	}
 }

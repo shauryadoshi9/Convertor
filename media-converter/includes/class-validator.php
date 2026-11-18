@@ -247,7 +247,15 @@ class MediaConverter_Validator {
 	 * @return array
 	 */
 	public function inspect_media_provider( $url, $host ) {
-		// Check YouTube.
+		// Check YouTube Playlist first.
+		if ( ( str_contains( $host, 'youtube.com' ) || str_contains( $host, 'youtu.be' ) ) && $this->is_playlist_url( $url ) ) {
+			$pl_info = $this->fetch_playlist_info( $url );
+			if ( $pl_info['success'] ) {
+				return $pl_info;
+			}
+		}
+
+		// Check YouTube single video.
 		if ( str_contains( $host, 'youtube.com' ) || str_contains( $host, 'youtu.be' ) ) {
 			return $this->fetch_youtube_oembed( $url );
 		}
@@ -259,6 +267,105 @@ class MediaConverter_Validator {
 
 		// Direct Media URL (e.g. https://domain.com/sample.mp4).
 		return $this->fetch_direct_media_headers( $url );
+	}
+
+	/**
+	 * Check if URL is a YouTube or media playlist.
+	 *
+	 * @param string $url
+	 * @return bool
+	 */
+	public function is_playlist_url( $url ) {
+		$parsed = wp_parse_url( $url );
+		$query  = $parsed['query'] ?? '';
+		parse_str( $query, $query_params );
+
+		if ( ! empty( $query_params['list'] ) ) {
+			return true;
+		}
+
+		if ( isset( $parsed['path'] ) && str_contains( $parsed['path'], '/playlist' ) ) {
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Extract Playlist metadata and entries using yt-dlp.
+	 *
+	 * @param string $url
+	 * @param int $max_items
+	 * @return array
+	 */
+	public function fetch_playlist_info( $url, $max_items = 100 ) {
+		$options = get_option( 'media_converter_options', array() );
+		$ytdlp_bin = ! empty( $options['ytdlp_path'] ) ? $options['ytdlp_path'] : ( MEDIA_CONVERTER_PATH . 'bin/yt-dlp.exe' );
+		if ( ! file_exists( $ytdlp_bin ) ) {
+			$ytdlp_bin = MediaConverter_Installer::auto_detect_binary( 'yt-dlp' );
+		}
+
+		$cmd = sprintf(
+			'%s --flat-playlist -J --playlist-end %d --no-warnings %s 2>nul',
+			escapeshellarg( $ytdlp_bin ),
+			intval( $max_items ),
+			escapeshellarg( $url )
+		);
+
+		$output = @shell_exec( $cmd );
+		if ( empty( $output ) ) {
+			return array(
+				'success' => false,
+				'error'   => __( 'Could not extract playlist information.', 'media-converter' ),
+			);
+		}
+
+		$data = json_decode( $output, true );
+		if ( empty( $data ) || ! is_array( $data ) ) {
+			return array(
+				'success' => false,
+				'error'   => __( 'Invalid playlist JSON metadata.', 'media-converter' ),
+			);
+		}
+
+		$raw_entries = $data['entries'] ?? array();
+		$entries     = array();
+		$total_sec   = 0;
+
+		foreach ( $raw_entries as $item ) {
+			if ( empty( $item['title'] ) && empty( $item['id'] ) ) {
+				continue;
+			}
+			$dur = intval( $item['duration'] ?? 0 );
+			$total_sec += $dur;
+			$entries[] = array(
+				'id'                 => $item['id'] ?? '',
+				'title'              => sanitize_text_field( $item['title'] ?? 'Video' ),
+				'duration'           => $dur,
+				'duration_formatted' => gmdate( $dur >= 3600 ? 'H:i:s' : 'i:s', $dur ),
+				'thumbnail'          => esc_url_raw( $item['thumbnails'][0]['url'] ?? ( $item['thumbnail'] ?? '' ) ),
+				'url'                => ! empty( $item['url'] ) && str_starts_with( $item['url'], 'http' ) ? $item['url'] : 'https://www.youtube.com/watch?v=' . ( $item['id'] ?? '' ),
+			);
+		}
+
+		return array(
+			'success'          => true,
+			'type'             => 'playlist',
+			'is_playlist'      => true,
+			'title'            => sanitize_text_field( $data['title'] ?? 'YouTube Playlist' ),
+			'playlist_title'   => sanitize_text_field( $data['title'] ?? 'YouTube Playlist' ),
+			'author'           => sanitize_text_field( $data['uploader'] ?? ( $data['channel'] ?? 'YouTube' ) ),
+			'playlist_channel' => sanitize_text_field( $data['uploader'] ?? ( $data['channel'] ?? 'YouTube' ) ),
+			'thumbnail'        => esc_url_raw( $entries[0]['thumbnail'] ?? '' ),
+			'total_items'      => count( $entries ),
+			'duration'         => gmdate( $total_sec >= 3600 ? 'H:i:s' : 'i:s', $total_sec ),
+			'total_duration'   => gmdate( $total_sec >= 3600 ? 'H:i:s' : 'i:s', $total_sec ),
+			'items'            => $entries,
+			'available_video_qualities' => array( 'original', '1080p', '720p', '480p', '360p' ),
+			'available_audio_qualities' => array( 'original', '320k', '256k', '192k', '128k' ),
+			'is_direct_stream' => true,
+			'legal_note'       => __( 'YouTube playlist identified. Videos can be converted and downloaded as a batch or single ZIP.', 'media-converter' ),
+		);
 	}
 
 	/**

@@ -92,14 +92,58 @@ The plugin installs and maintains the custom table `wp_media_conversion_jobs` vi
 | `download_count` | `INT(11)` | `DEFAULT 0` | Number of times downloaded |
 | `error_message` | `TEXT` | `NULL` | User-friendly error message if failed |
 | `ip_hash` | `VARCHAR(64)` | `NULL` | GDPR-compliant SHA-256 salted hash of client IP |
+| `batch_uuid` | `VARCHAR(64)` | `NULL, INDEX` | Optional UUID reference if job belongs to a playlist batch |
 | `created_at` | `DATETIME` | `NOT NULL` | Job creation timestamp |
 | `started_at` | `DATETIME` | `NULL` | Processing start timestamp |
 | `completed_at` | `DATETIME` | `NULL` | Transcoding completion timestamp |
 | `expires_at` | `DATETIME` | `NULL, INDEX` | Scheduled retention expiration date |
 
+### Batch Playlist Table: `wp_media_conversion_batches`
+
+| Column Name | Data Type | Attributes | Description |
+|---|---|---|---|
+| `id` | `BIGINT(20) UNSIGNED` | `AUTO_INCREMENT PRIMARY KEY` | Internal batch identifier |
+| `batch_uuid` | `VARCHAR(64)` | `NOT NULL UNIQUE KEY` | Public Batch UUID4 |
+| `user_id` | `BIGINT(20) UNSIGNED` | `DEFAULT 0, INDEX` | WordPress User ID |
+| `playlist_url` | `TEXT` | `NOT NULL` | Original YouTube playlist URL |
+| `playlist_title` | `VARCHAR(255)` | `NOT NULL DEFAULT 'Playlist Batch'` | Playlist title from metadata |
+| `output_format` | `VARCHAR(10)` | `NOT NULL DEFAULT 'mp3'` | Output format for batch (`mp3` or `mp4`) |
+| `output_quality` | `VARCHAR(50)` | `NOT NULL DEFAULT '320k'` | Output quality preset |
+| `total_items` | `INT(11)` | `NOT NULL DEFAULT 0` | Total number of items in playlist |
+| `completed_items` | `INT(11)` | `NOT NULL DEFAULT 0` | Converted items count |
+| `failed_items` | `INT(11)` | `NOT NULL DEFAULT 0` | Failed items count |
+| `status` | `VARCHAR(20)` | `NOT NULL DEFAULT 'queued', INDEX` | Batch status: `queued`, `processing`, `completed`, `failed` |
+| `progress` | `FLOAT` | `NOT NULL DEFAULT 0` | Aggregate batch progress (0.0 to 100.0) |
+| `zip_path` | `TEXT` | `NULL` | Path to compiled ZIP archive of all tracks |
+| `zip_filename` | `VARCHAR(255)` | `NULL` | Filename of compiled ZIP archive |
+| `zip_size` | `BIGINT(20) UNSIGNED` | `DEFAULT 0` | ZIP file size in bytes |
+| `download_token` | `VARCHAR(64)` | `NULL, INDEX` | Cryptographic HMAC token for 1-click ZIP download |
+| `created_at` | `DATETIME` | `NOT NULL` | Batch creation timestamp |
+| `completed_at` | `DATETIME` | `NULL` | Batch completion timestamp |
+| `expires_at` | `DATETIME` | `NULL, INDEX` | Batch retention expiration date |
+
 ---
 
-## 4. Security Architecture
+## 4. Long Video & Playlist Processing Architecture
+
+### 1. 2-Hour Video Single-Pass Stream Optimization
+- **Problem Solved:** Long-form YouTube videos (e.g. 2+ hours) historically failed or took hours due to redundant double-pass re-encoding: yt-dlp first downloaded streams, and FFmpeg subsequently decoded and re-encoded 216,000+ frames on CPU (`libx264 veryfast`).
+- **Single-Pass Finalized Execution:**
+  - For **MP3 Audio**: yt-dlp streams the optimal audio track and extracts high-bitrate MP3 directly using `-x --audio-format mp3 --audio-quality [val] --embed-metadata` in a single pass.
+  - For **MP4 Video**: yt-dlp merges pre-muxed streams directly using `--merge-output-format mp4 --postprocessor-args "ffmpeg:-c:v copy -c:a aac -b:a 192k"`, copying video packets losslessly without CPU transcoding overhead.
+  - **Dynamic Timeout Scaling:** Transcoding subprocess timeouts dynamically scale to `2.5 × media duration` (up to 7,200s).
+  - **Anti-Throttling:** YouTube DASH streaming utilizes `--concurrent-fragments 4` with 10 automated retries, avoiding 403 throttling or dropped TCP sockets on multi-gigabyte media.
+
+### 2. Complete Playlist Conversion & 1-Click ZIP Packaging
+- **Automatic Playlist Detection:** URLs containing `list=PL...` or `/playlist?list=...` are detected on paste or input.
+- **Metadata Extraction:** `yt-dlp --flat-playlist -J` retrieves the entire tracklist, video durations, thumbnails, and author information within ~1.5 seconds.
+- **Interactive Batch Configuration Card:** Users can toggle individual tracks or select all, configure batch target formats (MP3 / MP4), and launch asynchronous conversion in 1 click.
+- **Detached Playlist Worker (`bin/playlist-worker.php`):** Sequentially converts each queued track, writes real-time progress to `wp_media_conversion_batches`, and automatically compiles all completed media files into an organized ZIP archive using native system tooling (`ZipArchive` or `tar -a -cf`).
+- **Dual Delivery:** Users can download the entire compiled ZIP archive in 1 click or download individual converted tracks directly from the live progress card.
+
+---
+
+## 5. Security Architecture
 
 ### 1. SSRF (Server-Side Request Forgery) Defense
 When remote media URLs are submitted:

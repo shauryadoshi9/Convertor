@@ -68,6 +68,9 @@
 			panelProgress: document.getElementById('mc-panel-progress'),
 			panelCompleted: document.getElementById('mc-panel-completed'),
 			panelError: document.getElementById('mc-panel-error'),
+			panelPlaylistConfig: document.getElementById('mc-panel-playlist-config'),
+			panelPlaylistProgress: document.getElementById('mc-panel-playlist-progress'),
+			panelPlaylistCompleted: document.getElementById('mc-panel-playlist-completed'),
 
 			// Inputs
 			urlInput: document.getElementById('mc-url-input'),
@@ -398,6 +401,11 @@
 			}
 
 			const provider = data.provider;
+
+			if (provider && (provider.is_playlist || provider.type === 'playlist')) {
+				showPlaylistConfig(provider);
+				return;
+			}
 
 			populatePreview({
 				title: provider.title || 'Remote Media',
@@ -748,13 +756,406 @@
 		switchPanel('ingest');
 	}
 
+	/* -------------------------------------------------------------
+	   Playlist Suite Engine (Batch Processing & 1-Click ZIP)
+	------------------------------------------------------------- */
+	const playlistState = {
+		title: '',
+		channel: '',
+		url: '',
+		items: [],
+		selectedIndices: new Set(),
+		format: 'mp3',
+		quality: '320k',
+		batchUuid: null,
+		pollTimer: null
+	};
+
+	function escapeHtml(str) {
+		if (!str) return '';
+		return String(str)
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;');
+	}
+
+	function showPlaylistConfig(data) {
+		playlistState.title = data.playlist_title || data.title || 'YouTube Playlist';
+		playlistState.channel = data.playlist_channel || data.author || '';
+		playlistState.url = state.url;
+		playlistState.items = data.items || [];
+		playlistState.selectedIndices = new Set(playlistState.items.map((_, i) => i));
+		playlistState.format = 'mp3';
+		playlistState.quality = '320k';
+
+		const thumbEl  = document.getElementById('mc-playlist-thumb');
+		const titleEl  = document.getElementById('mc-playlist-title');
+		const authorEl = document.getElementById('mc-playlist-author');
+		const durEl    = document.getElementById('mc-playlist-duration');
+		const countEl  = document.getElementById('mc-playlist-count-badge');
+
+		if (thumbEl) thumbEl.src = data.thumbnail || (playlistState.items[0] ? playlistState.items[0].thumbnail : '');
+		if (titleEl) titleEl.textContent = playlistState.title;
+		if (authorEl) authorEl.textContent = playlistState.channel ? `by ${playlistState.channel}` : 'YouTube Playlist';
+		if (durEl) durEl.textContent = `Total: ${data.total_duration || data.duration || '--:--'}`;
+		if (countEl) countEl.textContent = `${playlistState.items.length} Videos`;
+
+		initPlaylistControls();
+		renderPlaylistItems();
+		updatePlaylistConvertButton();
+		switchPanel('playlist-config');
+	}
+
+	function initPlaylistControls() {
+		// Format Toggles (MP3 vs MP4)
+		const plFormatBtns = document.querySelectorAll('[data-pl-format]');
+		const plAudioBox   = document.getElementById('mc-pl-audio-quality-box');
+		const plVideoBox   = document.getElementById('mc-pl-video-quality-box');
+		const plAudioSel   = document.getElementById('mc-pl-audio-quality-select');
+		const plVideoSel   = document.getElementById('mc-pl-video-quality-select');
+
+		plFormatBtns.forEach(btn => {
+			btn.onclick = () => {
+				plFormatBtns.forEach(b => b.classList.remove('active'));
+				btn.classList.add('active');
+				const fmt = btn.dataset.plFormat;
+				playlistState.format = fmt;
+
+				if (fmt === 'mp3') {
+					if (plAudioBox) plAudioBox.style.display = 'block';
+					if (plVideoBox) plVideoBox.style.display = 'none';
+					playlistState.quality = plAudioSel ? plAudioSel.value : '320k';
+				} else {
+					if (plAudioBox) plAudioBox.style.display = 'none';
+					if (plVideoBox) plVideoBox.style.display = 'block';
+					playlistState.quality = plVideoSel ? plVideoSel.value : '720p';
+				}
+				updatePlaylistConvertButton();
+			};
+		});
+
+		if (plAudioSel) {
+			plAudioSel.onchange = () => {
+				if (playlistState.format === 'mp3') {
+					playlistState.quality = plAudioSel.value;
+				}
+			};
+		}
+		if (plVideoSel) {
+			plVideoSel.onchange = () => {
+				if (playlistState.format === 'mp4') {
+					playlistState.quality = plVideoSel.value;
+				}
+			};
+		}
+	}
+
+	function renderPlaylistItems() {
+		const listEl = document.getElementById('mc-pl-scroll-list');
+		if (!listEl) return;
+		listEl.innerHTML = '';
+
+		playlistState.items.forEach((item, idx) => {
+			const isChecked = playlistState.selectedIndices.has(idx);
+			const row = document.createElement('div');
+			row.className = `mc-pl-item-row ${isChecked ? 'selected' : ''}`;
+			row.innerHTML = `
+				<label class="mc-pl-item-label">
+					<input type="checkbox" class="mc-pl-item-cb" data-index="${idx}" ${isChecked ? 'checked' : ''} />
+					<span class="mc-pl-item-index">${idx + 1}</span>
+					${item.thumbnail ? `<img class="mc-pl-item-thumb" src="${escapeHtml(item.thumbnail)}" alt="" />` : '<div class="mc-pl-item-no-thumb">🎵</div>'}
+					<div class="mc-pl-item-details">
+						<span class="mc-pl-item-title">${escapeHtml(item.title)}</span>
+						<span class="mc-pl-item-dur">${escapeHtml(item.duration_formatted || '--:--')}</span>
+					</div>
+				</label>
+			`;
+			listEl.appendChild(row);
+		});
+
+		// Checkbox click handlers
+		listEl.querySelectorAll('.mc-pl-item-cb').forEach(cb => {
+			cb.addEventListener('change', (e) => {
+				const idx = parseInt(e.target.dataset.index, 10);
+				const row = e.target.closest('.mc-pl-item-row');
+				if (e.target.checked) {
+					playlistState.selectedIndices.add(idx);
+					if (row) row.classList.add('selected');
+				} else {
+					playlistState.selectedIndices.delete(idx);
+					if (row) row.classList.remove('selected');
+				}
+				const selectAllCb = document.getElementById('mc-pl-select-all');
+				if (selectAllCb) {
+					selectAllCb.checked = (playlistState.selectedIndices.size === playlistState.items.length);
+				}
+				updatePlaylistConvertButton();
+			});
+		});
+
+		const selectAllCb = document.getElementById('mc-pl-select-all');
+		if (selectAllCb) {
+			selectAllCb.checked = (playlistState.selectedIndices.size === playlistState.items.length);
+			selectAllCb.onchange = (e) => {
+				const checked = e.target.checked;
+				if (checked) {
+					playlistState.selectedIndices = new Set(playlistState.items.map((_, i) => i));
+				} else {
+					playlistState.selectedIndices.clear();
+				}
+				renderPlaylistItems();
+				updatePlaylistConvertButton();
+			};
+		}
+	}
+
+	function updatePlaylistConvertButton() {
+		const selCount = playlistState.selectedIndices.size;
+		const totalCount = playlistState.items.length;
+		const selCountEl = document.getElementById('mc-pl-selected-count');
+		const totCountEl = document.getElementById('mc-pl-total-count');
+		const btnTextEl  = document.getElementById('mc-pl-convert-btn-text');
+		const btn        = document.getElementById('mc-start-playlist-convert-btn');
+
+		if (selCountEl) selCountEl.textContent = selCount;
+		if (totCountEl) totCountEl.textContent = totalCount;
+		if (btnTextEl) {
+			const label = (selCount === totalCount) ? 'Convert Entire Playlist' : 'Convert Selected Videos';
+			btnTextEl.textContent = `${label} (${selCount} ${playlistState.format.toUpperCase()} ${selCount === 1 ? 'Track' : 'Tracks'})`;
+		}
+		if (btn) btn.disabled = (selCount === 0);
+	}
+
+	async function startPlaylistConversion() {
+		const selected = Array.from(playlistState.selectedIndices).map(idx => playlistState.items[idx]);
+		if (selected.length === 0) {
+			alert('Please select at least 1 video from the playlist to convert.');
+			return;
+		}
+
+		const btn = document.getElementById('mc-start-playlist-convert-btn');
+		if (btn) {
+			btn.disabled = true;
+			btn.innerHTML = '<div class="mc-btn-spinner"></div><span>Initializing Batch Engine...</span>';
+		}
+
+		try {
+			const res = await fetch(`${config.restUrl}/convert-playlist`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'X-WP-Nonce': config.nonce
+				},
+				body: JSON.stringify({
+					playlist_url: playlistState.url,
+					playlist_title: playlistState.title,
+					output_format: playlistState.format,
+					output_quality: playlistState.quality,
+					items: selected
+				})
+			});
+
+			const data = await res.json();
+			if (!res.ok || !data.success) {
+				if (btn) {
+					btn.disabled = false;
+					btn.innerHTML = '<span>Convert Entire Playlist</span>';
+				}
+				showError(data.message || 'Failed to initialize playlist conversion.');
+				return;
+			}
+
+			playlistState.batchUuid = data.batch_uuid;
+			switchPanel('playlist-progress');
+			renderPlaylistQueueInitial(selected);
+			startPollingPlaylist(data.batch_uuid);
+		} catch (err) {
+			if (btn) {
+				btn.disabled = false;
+				btn.innerHTML = '<span>Convert Entire Playlist</span>';
+			}
+			showError('Network error while starting playlist batch conversion.');
+		}
+	}
+
+	function renderPlaylistQueueInitial(items) {
+		const qList = document.getElementById('mc-pl-queue-list');
+		if (!qList) return;
+		qList.innerHTML = '';
+		items.forEach((item, idx) => {
+			const div = document.createElement('div');
+			div.className = `mc-pl-queue-item ${idx === 0 ? 'active' : ''}`;
+			div.id = `mc-q-item-${idx}`;
+			div.innerHTML = `
+				<div class="mc-q-icon">${idx === 0 ? '<div class="mc-spinner-sm"></div>' : '<span class="mc-q-num">' + (idx + 1) + '</span>'}</div>
+				<div class="mc-q-text">
+					<span class="mc-q-title">${escapeHtml(item.title)}</span>
+					<span class="mc-q-status">${idx === 0 ? 'Connecting stream...' : 'Queued'}</span>
+				</div>
+			`;
+			qList.appendChild(div);
+		});
+	}
+
+	function startPollingPlaylist(batchUuid) {
+		if (playlistState.pollTimer) clearInterval(playlistState.pollTimer);
+
+		const poll = async () => {
+			try {
+				const res = await fetch(`${config.restUrl}/playlist/${batchUuid}/progress`);
+				if (!res.ok) return;
+				const data = await res.json();
+				if (!data.success) return;
+
+				updatePlaylistProgressUI(data);
+
+				if (data.status === 'completed') {
+					clearInterval(playlistState.pollTimer);
+					showPlaylistCompleted(data);
+				} else if (data.status === 'failed') {
+					clearInterval(playlistState.pollTimer);
+					showError(data.stage || 'Playlist conversion encountered an error.');
+				}
+			} catch (e) {
+				console.warn('Playlist poll status:', e);
+			}
+		};
+
+		poll();
+		playlistState.pollTimer = setInterval(poll, 1500);
+	}
+
+	function updatePlaylistProgressUI(data) {
+		const pctEl       = document.getElementById('mc-pl-overall-pct');
+		const barEl       = document.getElementById('mc-pl-overall-bar');
+		const titleEl     = document.getElementById('mc-pl-progress-title');
+		const subEl       = document.getElementById('mc-pl-progress-sub');
+		const activeTitle = document.getElementById('mc-pl-active-title');
+		const activeSub   = document.getElementById('mc-pl-active-sub');
+
+		const pct = Math.min(100, Math.max(0, data.overall_progress || 0));
+		if (pctEl) pctEl.textContent = `${Math.round(pct)}%`;
+		if (barEl) barEl.style.width = `${pct}%`;
+
+		if (titleEl) titleEl.textContent = `Converting Playlist (${data.completed_items}/${data.total_items} Completed)`;
+		if (subEl) subEl.textContent = data.stage || 'Batch transcoding in progress...';
+
+		if (data.current_item) {
+			if (activeTitle) activeTitle.textContent = data.current_item.title || 'Processing track...';
+			if (activeSub) activeSub.textContent = data.current_item.stage || `${data.current_item.progress}% (${data.current_item.status})`;
+		}
+
+		if (data.items) {
+			const qList = document.getElementById('mc-pl-queue-list');
+			if (qList) {
+				data.items.forEach((item, idx) => {
+					let el = document.getElementById(`mc-q-item-${idx}`);
+					if (!el) {
+						el = document.createElement('div');
+						el.id = `mc-q-item-${idx}`;
+						qList.appendChild(el);
+					}
+
+					let iconHtml = '<span class="mc-q-num">' + (idx + 1) + '</span>';
+					let statusClass = '';
+
+					if (item.status === 'completed') {
+						iconHtml = '<span class="mc-q-check">✓</span>';
+						statusClass = 'completed';
+					} else if (['downloading', 'processing', 'validating'].includes(item.status)) {
+						iconHtml = '<div class="mc-spinner-sm"></div>';
+						statusClass = 'active';
+					} else if (item.status === 'failed') {
+						iconHtml = '<span class="mc-q-fail">✕</span>';
+						statusClass = 'failed';
+					}
+
+					el.className = `mc-pl-queue-item ${statusClass}`;
+					el.innerHTML = `
+						<div class="mc-q-icon">${iconHtml}</div>
+						<div class="mc-q-text">
+							<span class="mc-q-title">${escapeHtml(item.title)}</span>
+							<span class="mc-q-status">${escapeHtml(item.stage || item.status)}</span>
+						</div>
+					`;
+				});
+			}
+		}
+	}
+
+	function showPlaylistCompleted(data) {
+		switchPanel('playlist-completed');
+
+		const titleEl      = document.getElementById('mc-pl-complete-title');
+		const countEl      = document.getElementById('mc-pl-complete-count');
+		const formatEl     = document.getElementById('mc-pl-complete-format');
+		const sizeEl       = document.getElementById('mc-pl-complete-size');
+		const zipBtn       = document.getElementById('mc-pl-download-zip-btn');
+		const indivCountEl = document.getElementById('mc-pl-indiv-count');
+		const indivListEl  = document.getElementById('mc-pl-individual-list');
+
+		if (titleEl) titleEl.textContent = data.playlist_title || 'Playlist';
+		if (countEl) countEl.textContent = `${data.completed_items} of ${data.total_items} Tracks`;
+		if (formatEl) formatEl.textContent = `${data.output_format.toUpperCase()} (${data.output_quality})`;
+		if (sizeEl) sizeEl.textContent = data.zip_size || 'Ready';
+
+		if (zipBtn && data.zip_download_url) {
+			zipBtn.href = data.zip_download_url;
+			zipBtn.setAttribute('download', data.zip_filename || 'playlist.zip');
+		}
+
+		const completedItems = (data.items || []).filter(i => i.status === 'completed');
+		if (indivCountEl) indivCountEl.textContent = completedItems.length;
+
+		if (indivListEl && data.items) {
+			indivListEl.innerHTML = '';
+			data.items.forEach((item, idx) => {
+				const isComp = (item.status === 'completed');
+				const row = document.createElement('div');
+				row.className = 'mc-pl-indiv-row';
+				row.innerHTML = `
+					<span class="mc-pl-indiv-num">${idx + 1}</span>
+					<span class="mc-pl-indiv-title">${escapeHtml(item.title)}</span>
+					<span class="mc-pl-indiv-meta">${item.file_size || (isComp ? 'Ready' : item.status)}</span>
+					${isComp && item.download_url ? `
+						<a href="${item.download_url}" class="mc-btn-indiv-dl" download>
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+							<span>Download</span>
+						</a>
+					` : `<span class="mc-status-failed">Failed</span>`}
+				`;
+				indivListEl.appendChild(row);
+			});
+		}
+	}
+
+	function resetToIngest() {
+		if (state.pollInterval) clearInterval(state.pollInterval);
+		if (playlistState.pollTimer) clearInterval(playlistState.pollTimer);
+
+		state.tempId = null;
+		state.uploadedFile = null;
+		state.url = '';
+		state.jobUuid = null;
+
+		if (elements.urlInput) elements.urlInput.value = '';
+		if (elements.fileInput) elements.fileInput.value = '';
+		updateClearButtonVisibility();
+
+		switchPanel('ingest');
+	}
+
 	function switchPanel(panelName) {
 		const panels = [
 			elements.panelIngest,
 			elements.panelConfig,
 			elements.panelProgress,
 			elements.panelCompleted,
-			elements.panelError
+			elements.panelError,
+			elements.panelPlaylistConfig,
+			elements.panelPlaylistProgress,
+			elements.panelPlaylistCompleted
 		];
 
 		panels.forEach(p => {
@@ -768,7 +1169,10 @@
 			'config': elements.panelConfig,
 			'progress': elements.panelProgress,
 			'completed': elements.panelCompleted,
-			'error': elements.panelError
+			'error': elements.panelError,
+			'playlist-config': elements.panelPlaylistConfig,
+			'playlist-progress': elements.panelPlaylistProgress,
+			'playlist-completed': elements.panelPlaylistCompleted
 		}[panelName];
 
 		if (target) {
@@ -831,6 +1235,29 @@
 		}
 		if (elements.errorRetryBtn) {
 			elements.errorRetryBtn.addEventListener('click', resetToIngest);
+		}
+
+		// Playlist Actions
+		const startPlBtn = document.getElementById('mc-start-playlist-convert-btn');
+		if (startPlBtn) {
+			startPlBtn.addEventListener('click', startPlaylistConversion);
+		}
+		const cancelPlBtn = document.getElementById('mc-cancel-playlist-btn');
+		if (cancelPlBtn) {
+			cancelPlBtn.addEventListener('click', resetToIngest);
+		}
+		const resetPlBtn = document.getElementById('mc-pl-reset-btn');
+		if (resetPlBtn) {
+			resetPlBtn.addEventListener('click', resetToIngest);
+		}
+		const toggleIndivBtn = document.getElementById('mc-pl-toggle-individual');
+		const indivListEl = document.getElementById('mc-pl-individual-list');
+		if (toggleIndivBtn && indivListEl) {
+			toggleIndivBtn.addEventListener('click', () => {
+				const isNone = (indivListEl.style.display === 'none' || !indivListEl.style.display);
+				indivListEl.style.display = isNone ? 'flex' : 'none';
+				toggleIndivBtn.classList.toggle('active', isNone);
+			});
 		}
 	}
 
